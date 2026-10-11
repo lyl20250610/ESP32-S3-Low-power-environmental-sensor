@@ -620,6 +620,66 @@ SGP30 有两个和深睡架构冲突的特性，**都必须实测而不是相信
 
 **这一课学到的**：把"关掉"和"断电"区分清楚，是低功耗设计的基本功。
 
+### 5.1 第一次实测（2026-10-11，`APP_DEBUG_STAGE = 4`）：链路全通，卡在鉴权
+
+固件 803,856 字节，烧进 COM6 后连跑 5 轮，串口实录如下。
+
+**已经打通的部分**
+
+| 环节 | 实测结果 |
+|---|---|
+| Wi-Fi 连接 | SSID `602`，5 轮耗时 **1409 / 1829 / 1850 / 1999 / 2528 ms**，IP `192.168.1.102` |
+| RSSI | **-27 ~ -29 dBm**（很近，信号极好） |
+| TLS 握手 | **成功**，`tls_last_err=0x0 tls_stack_err=0 sock_errno=0` |
+| MQTT 到达服务端 | **成功**，`studio-mqtts.heclouds.com:8883` 正常回了 CONNACK |
+| token 生成 | 143 字符，与 PC 端算出的逐字一致 |
+| DHT11 | 温度 24.1~25.3 ℃ / 湿度 68~98 %RH，校验通过 |
+| 单轮总耗时 | **5928 ~ 6077 ms**（读 DHT11 + 连 Wi-Fi + TLS + MQTT 失败） |
+| `publish_failures` | 逐轮 0 → 1 → 2 → 3 → 4 递增（送的是"截至发送这一刻"的值） |
+
+**卡住的部分**：MQTT 服务端回 **`CONNACK=4`（bad username or password）**。
+固件里 `onenet.c` 打的完整错误行是：
+
+```
+E (4749) onenet: MQTT 建连失败：type=2 tls_last_err=0x0 tls_stack_err=0 sock_errno=0 connect_return_code=4
+W (4749) mqtt_client: Connection refused, bad username or password
+```
+
+注意 `tls_last_err=0x0` —— **TLS 层完全干净**，所以问题不在证书、不在 Wi-Fi、不在网络，
+纯粹是「平台不认这套鉴权参数」。
+
+**顺带观察到的三件事（都不是 bug，但值得记下）**
+
+1. **上电头两次读到 98.0 / 97.0 %RH**，被 `APP_HUMI_MAX_RH = 95.0` 判为越界 →
+   `sensor_ok = false`。这正是设计意图：**越界的读数不许上报成"有效"**，
+   而且不许拿上一次的值冒充。第三次起降到 89 / 76 / 68 %RH，恢复正常。
+2. 断开时串口出现 `W wifi_sta: AP 断开 reason=8 ... 1/3`。
+   `reason=8 = WIFI_REASON_ASSOC_LEAVE` —— 这是**我们自己调 `esp_wifi_disconnect()`
+   触发的正常现象**，不是掉线故障。日志里看到它不用慌。
+3. IDF 报 `W wifi: Password length matches WPA2 standards, authmode threshold
+   changes from OPEN to WPA2`。我们在 `wifi_sta.c` 里把 `threshold.authmode` 写成
+   `WIFI_AUTH_OPEN`（比 AloT 写死 `WPA2_PSK` 更宽容），IDF 看到密码长度够 8 位
+   会自动把阈值上调到 WPA2 —— **两种写法在这个网络下都能连上**，
+   但我们的写法在 WPA/WPA2 混合或 WPA3-only 的路由器上不会出现"密码明明对却连不上"。
+
+**鉴权排查（44 个变体，全部失败）**
+
+PC 端写了三个探针脚本（都只用标准库，不需要板子），把所有能想到的维度扫了一遍：
+
+| 脚本 | 扫了什么 | 变体数 | 结果 |
+|---|---|---|---|
+| `tools\onenet_auth_probe.py` | 签名算法 sha256/sha1/md5、密钥是否 base64 解码、新旧接入点、et 取值 | 8 | 全 4 |
+| `tools\onenet_auth_matrix.py` | 不存在的产品ID / 不存在的设备名 / 乱码密码 / username 与 client_id 对调 / 空 username | 9 | **全 4** |
+| `tools\onenet_auth_forms.py` | et 取 now+1h/1d/30d/1y、`res` 与 `sign` 编码与不编码的四种组合 | 11 | 全 4 |
+| `tools\onenet_auth_endpoints.py` | 4 个可达接入点（`studio-mqtts:8883`、`studio-mqtt:1883`、`mqtts:8883`、`mqtt:6002`）× 4 种 password 形态（密钥原文 / 解码明文 / 两种 token） | 16 | 全 4 |
+
+**最关键的一条结论**：`onenet_auth_matrix.py` 证明平台在这一点上是**黑盒** ——
+连"产品ID 和设备名都故意填成不存在的值"也是回 4。所以**返回码无法区分
+"签名错"与"资源不存在"**，继续在 PC 端穷举已经没有信息量了。
+
+剩下的唯一可能：**控制台里的产品ID / 设备名称 / 设备密钥三个值与固件里写的不一致**。
+排查顺序与「为什么必须先跳过 CN 校验」记在 `docs\ONENET_SETUP.md` §6.1。
+
 ---
 
 ## 步骤 6：深度睡眠闭环 —— 架构形态的切换点

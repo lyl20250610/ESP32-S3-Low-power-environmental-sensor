@@ -10,13 +10,18 @@
 #
 # 依赖清单（随步骤推进继续追加）：
 #   dht11          —— 步骤 2 起的温湿度驱动（它自己又带了 driver / esp_timer）
+#   wifi_sta       —— 步骤 5 的 Wi-Fi 连网（它自己又带了 esp_wifi / esp_netif / nvs_flash）
+#   onenet         —— 步骤 4 的 OneNET MQTT 上报（它自己又带了 mqtt / mbedtls）
 #   esp_hw_support —— esp_chip_info.h / esp_sleep.h
 #   esp_app_format —— esp_app_desc.h
 #   spi_flash      —— esp_flash.h（读 Flash 容量）
-#   （后续）步骤 3  sgp30；步骤 4  onenet + mqtt + json；步骤 5  wifi_sta + esp_wifi
+#   （后续）步骤 3  sgp30
+#
+# main.c 里 include 了 app_secrets.h，那就在本目录下，靠 INCLUDE_DIRS "." 就能找到，
+# 不需要（也**不应该**）把它做成一个组件 —— 它是凭据，不是能力。
 idf_component_register(
     SRCS "main.c"
     INCLUDE_DIRS "."
-    REQUIRES     dht11
+    REQUIRES     dht11 wifi_sta onenet
     PRIV_REQUIRES esp_hw_support esp_app_format spi_flash
 )

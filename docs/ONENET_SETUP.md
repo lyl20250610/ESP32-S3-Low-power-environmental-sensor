@@ -12,7 +12,7 @@
 | # | 事项 | 说明 |
 |---|---|---|
 | 1 | 账号**实名认证** | 未实名无法创建产品和设备。控制台右上角头像 → 实名认证 |
-| 2 | 记录**产品ID（pid）** | 建完产品后产品列表里的一串数字 |
+| 2 | 记录**产品ID（pid）** | **OneNET Studio（新版）是 10 位字母+数字短串**（本项目实际值形如 `EyF5sX8P09`）；旧版"多协议接入"才是纯数字。抄的时候**复制粘贴，不要手打**——`0/O`、`l/I/1` 打错一个字符，现象是永远 `CONNACK=4` |
 | 3 | ⚠️ **不要复用 AloT 的产品/设备** | 两台设备用同一套 `client_id` 登录会互相顶下线，现象是"连上 → 秒断 → 重连"，极难排查 |
 
 ---
@@ -145,6 +145,59 @@ notepad firmware\main\app_secrets.h
 | MQTT 直接连不上 | 用了 5GHz Wi-Fi；或产品 ID/设备密钥抄错；或账号未实名 |
 | 数据能进平台但历史查不到 | 免费版数据存储时长有限；或没建应用/没开通数据存储 |
 | 平台报"设备不存在" | 设备名不是 `node01`，或建在了别的产品下 |
+
+### 6.1 两个"看起来像坑、其实不是坑"的现象
+
+这两个都在 2026-10-11 实测遇到过，各花了不少时间，记下来免得重蹈。
+
+#### （1）OneNET 的服务端证书自签，且 CN 不是主机名 → 必须跳过 CN 校验
+
+实测 `studio-mqtts.heclouds.com:8883` 返回的证书：
+
+| 项 | 值 |
+|---|---|
+| subject / issuer | 都是 `C=CN, O=CMIOT, CN=OneNET MQTTS`（**自签名**） |
+| 有效期 | 2019-05-29 → 2049-05-21 |
+| subjectAltName | **完全没有这个扩展** |
+| DER 大小 | 831 字节 |
+
+mbedTLS 在证书**没有 SAN 扩展时会回退去比 CN**（`x509_crt.c` 的 `x509_crt_verify_name()`），
+而 CN 是 `OneNET MQTTS`、主机名是 `studio-mqtts.heclouds.com` → 不匹配 →
+置 `MBEDTLS_X509_BADCERT_CN_MISMATCH` → `esp_tls_mbedtls.c` 只要 `verify_result != 0`
+就判握手失败 → **永远走不到 MQTT**。
+
+所以 `firmware/components/onenet/onenet.c` 里 **`skip_cert_common_name_check = true` 是必须的**。
+注意这**不是**"关掉证书校验"：CA 仍然钉死在内嵌的 PEM 上、证书链仍然严格验证，
+被跳过的只是"证书里的名字是否等于主机名"这一条——对一个自签、且 CN 本来就不是主机名的
+证书而言，这条检查提供不了任何额外的身份保证。
+
+> 参考工程 AloT 的 `components/MY_MQTT/mqtt.c:328` 写的是 `false` 且不设 `common_name`，
+> **它这条链路是走不通的**，不要照抄。
+
+顺带一个工具层面的坑：**Python 从 3.7 起彻底取消了"没有 SAN 时回退比 CN"**
+（OpenSSL 的 `X509_CHECK_FLAG_NEVER_CHECK_SUBJECT`），所以用 Python 写探针脚本时，
+即使固件这条路是通的，Python 也会报 `Hostname mismatch`。
+`tools/onenet_token_check.py` 因此改成 `check_hostname=False` + `CERT_REQUIRED`
++ 手动按 mbedTLS 语义比 SAN/CN，这样它和固件的行为才一致。
+
+#### （2）`CONNACK = 4` 并不等于"设备不存在"
+
+在我们这类失败下，服务端**一律**回 **CONNACK=4（用户名或密码错误）**——
+连"产品ID 和设备名都故意填成不存在的值"也一样。我们用 `tools/onenet_auth_matrix.py`
+喂了 9 组变体（不存在的产品、不存在的设备、乱码密码、username/client_id 对调、
+空 username…），**9 组全部返回 4**。也就是说平台在这件事上是黑盒，
+返回码**无法**区分"签名错"与"资源不存在"。
+
+因此排查顺序应当是：
+
+1. `tools/onenet_token_check.py` → 验证 **token 算法 + 凭据能否建 TLS**（不需要板子）
+2. `tools/onenet_auth_matrix.py` → 看返回码有没有区分度（当前结论：没有，此路不通）
+3. 剩下的**只能人工核对控制台三元组**：产品ID、设备名称、设备密钥
+   （设备详情里点「显示」后**完整复制，含结尾的 `=`**）
+
+已经排除掉的可能：签名算法（sha256 / sha1 / md5）、设备密钥是否要 base64 解码后再做 HMAC、
+新旧接入点（`studio-mqtts.heclouds.com` 与 `mqtts.heclouds.com`）、`et` 的取值、
+token 中 URL 编码的字符集（与官方文档逐字一致）。
 
 ---
 
