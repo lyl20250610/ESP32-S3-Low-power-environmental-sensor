@@ -48,7 +48,7 @@
 
 | 文件 | 放什么 | 举例 | 入库？ |
 |---|---|---|---|
-| `main/app_config.h` | **业务与硬件参数** | `APP_SLEEP_SECONDS 600`、`APP_CO2_EVERY_N_WAKEUPS 3`、`APP_PIN_DHT_DATA GPIO_NUM_4`、`APP_WIFI_TIMEOUT_MS 10000`、`APP_DEBUG_STAGE 2` | ✅ |
+| `main/app_config.h` | **业务与硬件参数** | `APP_SLEEP_SECONDS 600`、`APP_CO2_EVERY_N_WAKEUPS 3`、`APP_PIN_DHT_DATA GPIO_NUM_4`、`APP_WIFI_TIMEOUT_MS 10000`、`APP_DEBUG_STAGE 6` | ✅ |
 | 组件自己的 `.h` | **协议级时序常量** | `DHT11_START_LOW_MS 20`、`DHT11_BIT_TIMEOUT_US 100` | ✅ |
 | `main/app_secrets.h` | **凭据** | WiFi SSID/密码、OneNET 三元组 | ⛔ `.gitignore` |
 
@@ -79,17 +79,21 @@
 | 值 | 阶段 | main.c 里的分支 |
 |---|---|---|
 | 1 | 工程骨架自检（芯片信息 + 深睡唤醒） | `stage1_sleep_demo()` |
-| 2 | DHT11 连续读取（2 秒轮询，不睡） | `stage2_dht11_loop()` ← **当前** |
-| 3 | SGP30 | 步骤 3 加入 |
-| 4 | Wi-Fi + OneNET 上报（30 秒循环，不睡） | 步骤 5 加入 |
-| 5 | 全链路（不睡） | 步骤 5 加入 |
-| 6 | 深睡闭环 | 步骤 6 起 |
+| 2 | DHT11 连续读取（2 秒轮询，不睡） | `stage2_dht11_loop()` |
+| 3 | SGP30（等模块到货） | 预留 |
+| 4 | DHT11 + Wi-Fi + OneNET 上报（10 秒循环，**不睡**） | `stage4_loop()` |
+| 6 | 深睡闭环 = 正式形态 | `stage6_run_once_and_sleep()` ← **当前** |
+
+**没有 5**：4 是"能联网但不睡"，6 是"联网 + 睡"，中间不需要单独一档。
+阶段 4 与 6 **共用同一套 `node_run_cycle()`**，差别只在收尾（`vTaskDelay` vs
+`esp_deep_sleep_start()`）—— 所以阶段 4 至今仍是一把有效的回归工具：
+链路出问题时切回 4，串口立刻恢复"一行一行看得见"的状态。
 
 改一个宏 + 重编译就切换阶段；**每个阶段的代码都留在仓库里**，回头复现问题不用翻 git 历史。
 
 ---
 
-## 5. 一次唤醒的完整流程（目标形态，步骤 6+）
+## 5. 一次唤醒的完整流程（2026-10-11 起已是实际形态，非目标形态）
 
 ```
 定时器唤醒 / 上电冷启动
@@ -194,9 +198,10 @@ tools/
 | `sgp30` | ⬜ 未开始 | 移植 + 实测模块静态电流（决定常供还是门控） |
 | `onenet` | ✅ 真机跑通 | 从 AloT 移植；踢掉后台重连退避定时器，改为同步 `onenet_connect()`。**教训①**：服务端证书 CN≠主机名，`skip_cert_common_name_check` 必须为 `true`。**教训②**：设备名必须抄控制台（实际 `ESP32-S3`，不是计划里的 `node01`）——写错的现象是永久的 `CONNACK=4`。实测 CONNACK=0 + PUBACK |
 | `wifi_sta` | ✅ 真机跑通 | 从 AloT 移植；踢掉 `portMAX_DELAY` 无限等待 + 10 秒后台重连定时器。实测连接 0.8~2.5 s、RSSI -27~-29 dBm；30 余轮中 2 轮偶发 10 s 超时被硬超时正确兜住。**教训①**：`wifi_sta_disconnect` 与闭源 `libnet80211.a` 撞名导致链接失败，公开 API 已全部改前缀 `node_wifi_*`。**教训②**：关机竞态已修（`s_shutting_down`），见 §10 与 WALKTHROUGH §5.3 |
-| 深睡闭环 / 电源门控 | ⬜ 未开始 | 步骤 6/7 |
+| 深睡闭环 | ✅ 已验收 | 步骤 6。实测周期 30.26~30.35 s（目标 30 s）、两次启动之间串口静默 **24.83 s**、第 2~6 次唤醒全是 `DEEPSLEEP + TIMER`、`seq` 靠 `RTC_DATA_ATTR` 跨 5 次深睡不归零、第 2~5 轮各一次 PUBACK。**唯一遗留**：板载 RGB 灯是否熄灭需目视确认（见 HARDWARE §3） |
+| 电源门控（DHT11 / SGP30 断电 + 休眠电流实测） | ⬜ 未开始 | 步骤 7。**前置**：DHT11 模块缺外部上拉电阻，冷启动前约 12 秒连读失败 —— 门控供电后每次唤醒都是冷启动，必须先解决 |
 | `tools/onenet_pull.py` + `analyze_run.py` | ⬜ 未开始 | 24 小时验收统计用 |
-| git 仓库 | ✅ 已打通 | 本地 = 远端 = `b340287`；**坑 7**：本机 `git.exe`/`curl.exe` 不读 WinINET 代理，须仓库级 `http.proxy=http://127.0.0.1:7877` |
+| git 仓库 | ✅ 已打通 | 本地 = 远端 = `8b7ba29`；**坑 7**：本机 `git.exe`/`curl.exe` 不读 WinINET 代理，须仓库级 `http.proxy=http://127.0.0.1:7877` |
 
 ---
 
