@@ -33,6 +33,13 @@ static bool               s_handlers_registered = false;
 
 static EventGroupHandle_t s_events   = NULL;
 static int                s_retry_num = 0;
+/** 是不是"我们自己正在主动关闭射频"。
+ *  esp_wifi_disconnect() 会异步抛出一条 WIFI_EVENT_STA_DISCONNECTED，
+ *  如果没有这个标志，事件处理器会把它当成"意外掉线"，在关射频的当口
+ *  又发起一次 esp_wifi_connect()，和紧随其后的 esp_wifi_stop() 抢时序
+ *  （实测表现：每次关机都打一条"第 1/3 次快速重连"，白白多耗一次射频时间）。
+ *  详见 docs/WALKTHROUGH.md §5.3 */
+static volatile bool      s_shutting_down = false;
 
 /* ===========================================================================
  * NVS —— Wi-Fi 驱动启动的硬前置
@@ -73,7 +80,11 @@ static void wifi_event_handler(void *arg, esp_event_base_t base, int32_t event_i
 
     } else if (base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
         const wifi_event_sta_disconnected_t *d = (const wifi_event_sta_disconnected_t *)event_data;
-        if (s_retry_num < NODE_WIFI_FAST_RETRY_MAX) {
+        if (s_shutting_down) {
+            /* 这是我们自己 node_wifi_disconnect() 掀起的断开，不是掉线 ——
+             * 绝对不能再发起连接，否则会和 esp_wifi_stop() 抢时序。 */
+            ESP_LOGD(TAG, "主动关闭引起的断开（reason=%d），按预期忽略", d ? d->reason : -1);
+        } else if (s_retry_num < NODE_WIFI_FAST_RETRY_MAX) {
             s_retry_num++;
             ESP_LOGW(TAG, "AP 断开（reason=%d），第 %d/%d 次快速重连",
                      d ? d->reason : -1, s_retry_num, NODE_WIFI_FAST_RETRY_MAX);
@@ -214,6 +225,9 @@ esp_err_t node_wifi_connect(const char *ssid, const char *password, uint32_t tim
     /* 清掉上一次的残留位，否则"上一轮的 FAIL"会让这一轮立刻误判失败 */
     xEventGroupClearBits(s_events, WIFI_STA_CONNECTED_BIT | WIFI_STA_FAIL_BIT);
     s_retry_num = 0;
+    /* 本轮是"要连接"，撤销上一轮关机时立起的标志（必须在 esp_wifi_start() 之前，
+     * 否则 STA_START/DISCONNECTED 事件会被误判成"正在关机"而不重连） */
+    s_shutting_down = false;
 
     esp_err_t err = nvs_ensure_init();
     if (err != ESP_OK) {
@@ -307,6 +321,10 @@ void node_wifi_disconnect(void)
     if (!s_wifi_inited) {
         return;
     }
+
+    /* 先立标志：esp_wifi_disconnect() 会异步抛 DISCONNECTED 事件，
+     * 标志必须先于它置位，事件处理器才不会把它当成掉线去重连。 */
+    s_shutting_down = true;
 
     /* 先 disconnect（礼貌地通知 AP），再 stop（真正关射频）。 */
     esp_err_t err = esp_wifi_disconnect();

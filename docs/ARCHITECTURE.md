@@ -28,8 +28,8 @@
 │  components/                 能力层（各自只知道自己的器件）   │
 │  ├─ dht11/       ✅ 已完成   单总线温湿度，含电源门控         │
 │  ├─ sgp30/       ⬜ 步骤 3   I²C eCO₂/TVOC，跨唤醒保存基线    │
-│  ├─ wifi_sta/    🟡 已跑通    一次性连接 + 硬超时（改自 AloT） │
-│  └─ onenet/      🟡 已跑通    OneNET 物模型上报（改自 AloT）   │
+│  ├─ wifi_sta/    ✅ 已验收    一次性连接 + 硬超时（改自 AloT） │
+│  └─ onenet/      ✅ 已验收    OneNET 物模型上报（改自 AloT）   │
 └──────────────────────────┬──────────────────────────────────┘
                            │
 ┌──────────────────────────▼──────────────────────────────────┐
@@ -192,15 +192,15 @@ tools/
 | 工程骨架 / 构建 / 分区 / 烧录 | ✅ 已验证 | 编译 0 error 0 warning，已烧进板子 |
 | `dht11` | ✅ 已验收 | 连续 14 次 CRC 通过（23.4℃ / 38.0%RH，0.1℃ 分辨率）。**遗留**：模块无外部上拉电阻，上电冷启动前约 12 秒会连读失败 —— 步骤 7 前须解决 |
 | `sgp30` | ⬜ 未开始 | 移植 + 实测模块静态电流（决定常供还是门控） |
-| `onenet` | 🟡 已写完并真机跑通 | 从 AloT 移植；踢掉后台重连退避定时器，改为同步 `onenet_connect()`。**教训**：服务端证书 CN≠主机名，`skip_cert_common_name_check` 必须为 `true`（见 `docs/ONENET_SETUP.md` §6.1）。当前卡在服务端 `CONNACK=4` |
-| `wifi_sta` | 🟡 已写完并真机跑通 | 从 AloT 移植；踢掉 `portMAX_DELAY` 无限等待 + 10 秒后台重连定时器。实测连接 1.4~2.5 s、RSSI -27 dBm。**教训**：`wifi_sta_disconnect` 与闭源 `libnet80211.a` 撞名导致链接失败，公开 API 已全部改前缀 `node_wifi_*` |
+| `onenet` | ✅ 真机跑通 | 从 AloT 移植；踢掉后台重连退避定时器，改为同步 `onenet_connect()`。**教训①**：服务端证书 CN≠主机名，`skip_cert_common_name_check` 必须为 `true`。**教训②**：设备名必须抄控制台（实际 `ESP32-S3`，不是计划里的 `node01`）——写错的现象是永久的 `CONNACK=4`。实测 CONNACK=0 + PUBACK |
+| `wifi_sta` | ✅ 真机跑通 | 从 AloT 移植；踢掉 `portMAX_DELAY` 无限等待 + 10 秒后台重连定时器。实测连接 0.8~2.5 s、RSSI -27~-29 dBm；30 余轮中 2 轮偶发 10 s 超时被硬超时正确兜住。**教训①**：`wifi_sta_disconnect` 与闭源 `libnet80211.a` 撞名导致链接失败，公开 API 已全部改前缀 `node_wifi_*`。**教训②**：关机竞态已修（`s_shutting_down`），见 §10 与 WALKTHROUGH §5.3 |
 | 深睡闭环 / 电源门控 | ⬜ 未开始 | 步骤 6/7 |
 | `tools/onenet_pull.py` + `analyze_run.py` | ⬜ 未开始 | 24 小时验收统计用 |
-| git 仓库 | ✅ 已打通 | 本地 = 远端 = `df065e3`；**坑 7**：本机 `git.exe`/`curl.exe` 不读 WinINET 代理，须仓库级 `http.proxy=http://127.0.0.1:7877` |
+| git 仓库 | ✅ 已打通 | 本地 = 远端 = `b340287`；**坑 7**：本机 `git.exe`/`curl.exe` 不读 WinINET 代理，须仓库级 `http.proxy=http://127.0.0.1:7877` |
 
 ---
 
-## 10. 复用 AloT 组件时的三个已知陷阱
+## 10. 复用 AloT 组件时的四个已知陷阱
 
 参考工程：`D:\esp32\ESP32-S31\ESP32-S3\AloT`（同为 ESP-IDF，target esp32s3）
 
@@ -208,4 +208,12 @@ tools/
 |---|---|---|
 | `components/DHT11` | 带一个 **2 秒轮询常驻任务**；`dht11_get_temperature()` 不启动任务就恒返回 0 | 整个任务删掉，只留一次性 `dht11_read_once()` |
 | `components/WIFI` | `xEventGroupWaitBits(..., portMAX_DELAY)` **无限等待** + 10 秒后台重连定时器 | 换成硬超时，删掉定时器（不变量 ①） |
+| `components/WIFI` | **关机竞态**：重连逻辑只判"是否掉线"，不判"这次掉线是谁造成的"→ `esp_wifi_disconnect()` 的异步事件在 `esp_wifi_stop()` 已开始后又触发一次重连 | 加 `volatile bool s_shutting_down`：关机时先立标志再 disconnect，事件处理器见标志只打 `ESP_LOGD` 不重连（详见 WALKTHROUGH §5.3） |
 | `components/MY_MQTT` | 已内建 5s→120s 指数退避重连定时器 | 删掉退避（一次唤醒只连一次）；其余 TLS/token/QoS1 直接复用 |
+
+另外两条**不是 AloT 的坑、而是 ESP-IDF 本身**的坑，也记在这里备查：
+
+| 现象 | 成因 | 处置 |
+|---|---|---|
+| 链接期 `multiple definition of 'wifi_sta_disconnect'` | ESP32 Wi-Fi 协议栈部分闭源预编译（`libnet80211.a` / `libcore.a` / `libpp.a`）带了一批**无前缀全局符号** | 本项目能力层 API 一律加前缀：`dht11_*` / `node_wifi_*` / `onenet_*` |
+| 自签证书 `CN ≠ 主机名` 时 TLS 必然握手失败 | `esp_tls_mbedtls.c` 无 SAN 时回退比 CN（`x509_crt.c` 的 `x509_crt_verify_name()`），而 OneNET 服务端证书 `CN=OneNET MQTTS`、无 SAN | `skip_cert_common_name_check = true`，信任仍由内嵌 CA 提供（详见 `docs/ONENET_SETUP.md` §6.1） |
