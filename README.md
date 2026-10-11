@@ -113,6 +113,12 @@ git config http.proxy  http://127.0.0.1:7877
 git config https.proxy http://127.0.0.1:7877
 ```
 
+⚠️ **这两项会丢。2026-10-11 就丢过一次**：配置不在时 `git push` 报
+`Recv failure: Connection was reset`，重新执行上面两行立刻就好了。
+丢的原因不明（本机同时跑着 `codex` / `ZCode` 等工具，不排除是它们动了 `.git/config`）。
+**推之前先 `git config --local --get-regexp proxy` 确认一下**，比推失败再回头查省事。
+`tools\git-proxy.cmd` 就是为这个场景写的辅助脚本。
+
 想对所有仓库生效就把 `--global` 加上；想取消就 `git config --unset http.proxy`。
 **注意**：代理关掉时 git 会连不上，届时记得取消这两项。
 
