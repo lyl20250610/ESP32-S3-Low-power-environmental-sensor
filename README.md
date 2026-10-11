@@ -95,6 +95,35 @@ Copy-Item firmware\main\app_secrets.h.example firmware\main\app_secrets.h
 > 🔒 **本仓库是 PUBLIC 的。** `app_secrets.h` 已被 `.gitignore` 排除，
 > 提交前请务必 `git status` 复核，确认它不在待提交列表里。
 
+### 提交与推送（本机必须走代理，否则连不上 GitHub）
+
+**症状**：`git fetch` / `git push` 报
+`Failed to connect to github.com port 443 after 21000 ms: Could not connect to server`，
+或 `Recv failure: Connection was reset`。
+**但浏览器和 `Invoke-WebRequest https://github.com` 却是 200** —— 这个组合就是本机代理的典型特征。
+
+**根因**：本机系统代理（MyClash）在 `127.0.0.1:7877`。
+浏览器、VS Code、PowerShell 的 `Invoke-WebRequest` 都会自动读取 WinINET 代理设置，
+而 **`git.exe` 和 `curl.exe` 不会**，所以它们直连 `20.205.243.166:443` 就会超时。
+
+**已在本仓库配好**（`.git/config`，只对本仓库生效）：
+
+```powershell
+git config http.proxy  http://127.0.0.1:7877
+git config https.proxy http://127.0.0.1:7877
+```
+
+想对所有仓库生效就把 `--global` 加上；想取消就 `git config --unset http.proxy`。
+**注意**：代理关掉时 git 会连不上，届时记得取消这两项。
+
+**诊断命令**（下次再遇到类似"网页能开、命令行连不上"，先查这两条）：
+
+```powershell
+Get-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings' |
+    Select-Object ProxyEnable, ProxyServer
+Get-Process | Where-Object ProcessName -match 'clash|v2ray|xray|sing-box'
+```
+
 ### ⚠️ VS Code 里满屏红线（"无法打开源文件 xxx.h"）
 
 **这不是编译错误，是编辑器的 IntelliSense 找不到头文件。** 判断依据很简单：

@@ -73,6 +73,26 @@
   （分别对应 `esp_chip_info.h`/`esp_sleep.h`、`esp_app_desc.h`、`esp_flash.h`）。
 - 教训：**报错信息最后那句 "add X to PRIV_REQUIRES" 就是答案，照做即可**；遇到 `fatal error: xxx.h: No such file or directory` 且路径确实存在于 IDF 里时，先怀疑 REQUIRES，而不是怀疑 IDF 装坏了。
 
+**坑 7（步骤 2 收尾时撞上，属于本机网络环境）**：`git fetch` / `git push` 连不上 GitHub，而浏览器和 PowerShell 的 `Invoke-WebRequest https://github.com` 却返回 200。
+
+- 症状：`fatal: unable to access 'https://github.com/…': Failed to connect to github.com port 443 after 21093 ms: Could not connect to server`（偶尔是 `Recv failure: Connection was reset`）；`curl.exe` 同样超时（`curl: (28)`）。
+- 根因：本机系统代理（**MyClash**）在 `127.0.0.1:7877`。浏览器 / VS Code / `Invoke-WebRequest` 会自动读 WinINET 代理设置，而 **`git.exe` 与 `curl.exe` 不会**，于是它们直连 `github.com`（解析为 `20.205.243.166`）超时。
+- 诊断（"网页能开、命令行连不上"时先跑这两条）：
+  ```powershell
+  Get-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings' |
+      Select-Object ProxyEnable, ProxyServer
+  Get-Process | Where-Object ProcessName -match 'clash|v2ray|xray|sing-box'
+  ```
+- 修法（已对本仓库配好，只影响本仓库）：
+  ```powershell
+  git config http.proxy  http://127.0.0.1:7877
+  git config https.proxy http://127.0.0.1:7877
+  ```
+  代理关掉时 git 会连不上，记得 `git config --unset http.proxy` / `--unset https.proxy`。
+- 顺带查明的凭据现状：全局 `credential.helper` 是 Git Credential Manager
+  （`C:\Users\Lenovo\scoop\apps\git\2.50.1\mingw64\bin\git-credential-manager.exe`），
+  **GitHub 凭据已缓存**，因此 `git push` 无需再输密码。
+
 ---
 
 ## 1. 目标与范围
