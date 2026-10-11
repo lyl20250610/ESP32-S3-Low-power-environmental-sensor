@@ -1,0 +1,56 @@
+# ============================================================
+#  本仓库是 PUBLIC 仓库，凭据文件绝不允许进入版本库
+#  维护规则：任何时候 `git status` 里都不应出现 app_secrets.h
+# ============================================================
+
+# ---------- 凭据（最高优先级，放在文件最前面）----------
+**/app_secrets.h
+app_secrets.h
+*.secrets.h
+
+# ---------- ESP-IDF 构建产物 ----------
+build/
+**/build/
+sdkconfig
+sdkconfig.old
+managed_components/
+dependencies.lock
+compile_commands.json
+*.elf
+*.bin
+*.hex
+*.map
+*.o
+*.a
+*.d
+size*.txt
+
+# ---------- 工具链/IDE/编辑器 ----------
+.vscode/
+.idea/
+.claude/
+.cache/
+.zcodeignore
+*.swp
+*~
+
+# ---------- Windows / macOS 杂物 ----------
+Thumbs.db
+desktop.ini
+.DS_Store
+
+# ---------- Python ----------
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# ---------- 调试与测量产物（本地留档，不入库）----------
+*.log
+logs/
+measurements/
+data/*.csv
+_recovery/
+
+# ---------- 项目书纯文本导出（由 tools/dump_docx.py 生成）----------
+tools/project_doc.txt

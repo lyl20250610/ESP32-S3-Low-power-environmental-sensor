@@ -1,0 +1,15 @@
+# ESP32-S3-WROOM-1-N8R8 分区表（8MB Flash = 0x800000）
+#
+# 为什么用自定义分区表：
+#   官方 single-app 表默认按 2MB Flash 排布，8MB 模组会被浪费；
+#   且本项目后续可能加「OTA 双分区」或「本地数据暂存」分区，先用自定义表留好余地。
+#
+# Name,      Type, SubType,  Offset,   Size,      Flags
+nvs,         data, nvs,      0x9000,   0x6000,
+phy_init,    data, phy,      0xf000,   0x1000,
+factory,     app,  factory,  0x10000,  0x200000,
+# 说明：
+#   nvs        0x9000  24KB  —— Wi-Fi 校准数据、PHY 校准、用户参数
+#   phy_init   0xf000   4KB  —— PHY 初始化数据
+#   factory    0x10000  2MB  —— 应用固件（关闭蓝牙 + -Os 后实际约 1MB）
+#   0x210000 ~ 0x800000（约 6MB）暂留空闲，供后续 OTA / spiffs / 数据缓存使用

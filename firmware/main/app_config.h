@@ -1,0 +1,195 @@
+/**
+ * @file app_config.h
+ * @brief 全工程集中配置：引脚、周期、超时、阈值。
+ *
+ * 设计约定（PLAN.md 第 2.6 节「不变量」）：
+ *   1. 所有会阻塞的调用都必须有一个**有限**的上界超时，
+ *      因此本文件里每一个 *_TIMEOUT_MS / *_MS 都不允许是 0 或"无限"。
+ *   2. 引脚一律写成 GPIO_NUM_x 而不是裸数字，让编译器帮我们查错。
+ *   3. 任何"魔法数字"都必须在这里命名，不许散落在业务代码里。
+ *      例外：**协议级时序**（例如 DHT11 的 20ms 起始脉冲）属于驱动组件自身，
+ *      放在对应组件的头文件里（见 components/dht11/dht11.h 的 DHT11_* 宏），
+ *      不在这里重复定义 —— 一处定义、一处修改。
+ *
+ * 板卡：ESP32-S3-DevKitC-1 v1.1    模组：ESP32-S3-WROOM-1-N8R8
+ */
+
+#pragma once
+
+#include <stdint.h>
+
+#include "driver/gpio.h"
+
+/* ==========================================================================
+ * 零、当前调试阶段（决定 main.c 跑哪段程序）
+ * ==========================================================================
+ *
+ * 为什么要有这个开关：步骤 1~5 是"能连续观察"的调试固件，步骤 6 才把
+ * 「深度睡眠 → 定时唤醒 → 上报 → 再睡」的正式闭环接上。两套代码逻辑差别很大，
+ * 用编译期开关切换，比在运行时用 if 判断更清楚（不会把调试代码带进正式固件，
+ * 也不会出现"这段代码到底还会不会被执行"的疑问）。
+ *
+ *   1 = 只做骨架自检 + 深睡 10 秒（步骤 1，已验收通过）
+ *   2 = DHT11 连续读取（每 2 秒一次，不深睡）        ← 当前
+ *   3 = 追加 SGP30 连续读数
+ *   4 = 追加 OneNET 上报（每周期一次）
+ *   6 = 正式闭环：一次唤醒做完整套动作后进深睡
+ */
+#define APP_DEBUG_STAGE                 2
+
+/* ==========================================================================
+ * 一、时间参数
+ * ========================================================================== */
+
+/** 主唤醒周期（秒）。项目书 6.3 节示例值 = 600 秒（10 分钟）。 */
+#define APP_SLEEP_SECONDS               600
+
+/**
+ * 每隔几个唤醒周期采集一次 SGP30（CO2 / TVOC）。
+ * 3 × 600s = 30 分钟 —— 用户 m00208 决策；理由见 PLAN.md 2.5 节：
+ * SGP30 单次测量 48.8mA × 约 15s ≈ 0.203mAh，若每 10 分钟采一次
+ * 会把平均电流从 1.65mA 抬到 2.44mA（+48%），直接击穿续航目标。
+ */
+#define APP_CO2_EVERY_N_WAKEUPS         3
+
+/** 调试期把主周期压短的开关：1 = 用 APP_SLEEP_SECONDS_DEBUG，0 = 用正式值。 */
+#define APP_DEBUG_SHORT_SLEEP           0
+#define APP_SLEEP_SECONDS_DEBUG         30
+
+/* ==========================================================================
+ * 二、引脚分配（PLAN.md 第 7 节「DevKitC-1 针对性更正」）
+ * ==========================================================================
+ *
+ * 必须回避的脚：
+ *   GPIO0 / GPIO3 / GPIO45 / GPIO46  —— 启动绑带脚（电平决定启动模式，接了外设会启动失败）
+ *   GPIO26 ~ GPIO32                  —— 模组内部 SPI Flash
+ *   GPIO33 ~ GPIO37                  —— N8R8 的 Octal PSRAM（本项目 CONFIG_SPIRAM=n，
+ *                                       但脚位仍不宜复用，避免将来打开 PSRAM 时冲突）
+ *   GPIO19 / GPIO20                  —— 原生 USB D- / D+（用 USB 口调试时会冲突）
+ *   GPIO43 / GPIO44                  —— UART0 TX / RX（串口日志通道）
+ *   板载 WS2812 RGB                  —— v1.1 = GPIO38（v1.0 = GPIO48，待步骤 6 实测确认）
+ *   板载红色电源 LED                  —— 硬连 3.3V，软件关不掉
+ */
+
+/** DHT11 数据线。3 针带小板模块自带 4.7k~10k 上拉，不需外接电阻。 */
+#define APP_PIN_DHT_DATA                GPIO_NUM_4
+
+/** DHT11 电源门控脚（低功耗版由固件控电）。DHT11 工作电流约 1mA，GPIO 直驱安全。 */
+#define APP_PIN_DHT_POWER               GPIO_NUM_5
+
+/**
+ * DHT11 是否由 GPIO 门控供电。
+ *   0 = VCC 接常供 3.3V —— 步骤 2「传感器测试」用这个，接线最简单，
+ *       也方便先用万用表量电压确认传感器到底有没有工作。
+ *   1 = VCC 接到 APP_PIN_DHT_POWER，由固件控电 —— 步骤 7 低功耗验证开始用。
+ */
+#define APP_DHT_POWER_GATE_ENABLED      0
+
+/** SGP30 I2C 引脚（模块自带上拉）。 */
+#define APP_PIN_SGP_SDA                 GPIO_NUM_8
+#define APP_PIN_SGP_SCL                 GPIO_NUM_9
+
+/**
+ * SGP30 电源门控脚 —— ⚠️ 步骤 7 才最终决定是否使用。
+ *
+ * 为什么不能像 DHT11 那样直接 GPIO 直驱：
+ *   SGP30 测量模式供电电流高达 48.8mA，而 ESP32 GPIO 单脚长期只能约 20mA、
+ *   绝对上限约 40mA。直驱会拉低电压甚至损坏 IO。
+ * 两条待实测路线：
+ *   方案 A：常供 3.3V，只在采样时发测量命令（若模块静态电流只有几十 µA，此方案完胜，
+ *           还顺带免掉 15 秒预热）；
+ *   方案 B：GPIO 驱动 P 沟道 MOSFET / 负载开关给整块模块门控供电。
+ * 步骤 7 实测静态电流后再定；本宏暂时只是占位，未接线前不要用它控制任何东西。
+ */
+#define APP_PIN_SGP_POWER               GPIO_NUM_10
+#define APP_SGP_POWER_GATE_ENABLED      0   /* 1 = 启用 GPIO 门控；步骤 7 决定 */
+
+/** 板载 WS2812 RGB 灯数据脚（步骤 6 会用它把灯熄掉，省下上百 µA ~ 数 mA）。 */
+#define APP_PIN_RGB_LED                 GPIO_NUM_38
+
+/* ==========================================================================
+ * 三、阈值参数
+ * ========================================================================== */
+
+/**
+ * 传感器数据合理性范围（超出即判 sensor_ok = false，绝不用上次值伪装）。
+ *
+ * 注意这里比 DHT11 的物理量程（0~50°C / 20~90%RH）**宽**：
+ * 这是"这条读数可不可信、要不要丢弃"的判据，不是"传感器标称精度"的声明。
+ * 卡得太死会把真实但极端的读数（比如冬天 12°C、浴室 93%RH）误判成故障。
+ */
+#define APP_TEMP_MIN_C                  (-10.0f)
+#define APP_TEMP_MAX_C                  (60.0f)
+#define APP_HUMI_MIN_RH                 (5.0f)
+#define APP_HUMI_MAX_RH                 (95.0f)
+
+/* ==========================================================================
+ * 四、超时参数（单位 ms）—— 全部必须有上界
+ * ========================================================================== */
+
+/** Wi-Fi 连接硬超时。项目书 4.1 节：10 秒；超时即放弃本周期，不无限重试。 */
+#define APP_WIFI_TIMEOUT_MS             10000
+
+/**
+ * MQTT / TLS 连接硬超时。
+ * 比项目书示例（4s）放宽的理由：8883 端口走 TLS，握手本身就要 2~4 秒。
+ * 注意这是"上界"，正常 2~3 秒就连上了，不会白等。
+ */
+#define APP_MQTT_CONNECT_TIMEOUT_MS     8000
+
+/** QoS1 发布后等待 PUBACK 的硬超时。 */
+#define APP_MQTT_PUBLISH_TIMEOUT_MS     5000
+
+/** 关闭 Wi-Fi / MQTT 的收尾等待，避免卡在 disconnect 流程里。 */
+#define APP_SHUTDOWN_GRACE_MS           500
+
+/** SGP30 上电后的预热时间 —— 15 秒是公开资料值，步骤 3 要实测复核。 */
+#define APP_SGP30_WARMUP_MS             15000
+
+/* ==========================================================================
+ * 五、身份标识
+ * ========================================================================== */
+
+/** 节点编号，会出现在串口日志里。OneNET 侧的设备名在 app_secrets.h 中定义。 */
+#define APP_NODE_ID                     "node01"
+
+/* ==========================================================================
+ * 六、编译期防御：配置写错时宁可不编译，也不要烧进去一个错误固件
+ * ========================================================================== */
+
+#include "sdkconfig.h"
+
+#if !CONFIG_IDF_TARGET_ESP32S3
+#error "本项目目标必须是 ESP32-S3。请检查 sdkconfig 里 CONFIG_IDF_TARGET=\"esp32s3\"。"
+#endif
+
+#if CONFIG_SPIRAM
+#error "本项目必须关闭 PSRAM（见 PLAN.md 决策 D6）：请确认 sdkconfig 里 CONFIG_SPIRAM 未启用。"
+#endif
+
+#if APP_DEBUG_STAGE < 1 || APP_DEBUG_STAGE > 6
+#error "APP_DEBUG_STAGE 只能是 1~6，请检查取值。"
+#endif
+
+/** 正式的唤醒周期（秒）。调试期想缩短就打开 APP_DEBUG_SHORT_SLEEP。 */
+static inline uint32_t app_sleep_seconds(void)
+{
+#if APP_DEBUG_SHORT_SLEEP
+    return APP_SLEEP_SECONDS_DEBUG;
+#else
+    return APP_SLEEP_SECONDS;
+#endif
+}
+
+/**
+ * @brief DHT11 的电源门控引脚；不做门控时返回 -1。
+ * @note  DHT11 驱动约定：power_pin < 0 表示"传感器接常供 3.3V"。
+ */
+static inline gpio_num_t app_dht_power_pin(void)
+{
+#if APP_DHT_POWER_GATE_ENABLED
+    return APP_PIN_DHT_POWER;
+#else
+    return (gpio_num_t)(-1);
+#endif
+}
